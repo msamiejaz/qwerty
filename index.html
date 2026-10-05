@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Contact Book</title>
+<style>
+  :root{--bg:#eef2f0;--card:#fff;--ink:#1c2b27;--mute:#64756f;--accent:#1f6f5c;--line:#d5dfdb;--danger:#b3372f}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:Georgia,"Times New Roman",serif;background:var(--bg);color:var(--ink);line-height:1.5}
+  header{padding:32px 20px 8px;max-width:900px;margin:auto}
+  h1{margin:0;font-size:2.2rem;letter-spacing:-.5px}
+  header p{margin:4px 0 0;color:var(--mute)}
+  main{max-width:900px;margin:auto;padding:16px 20px 48px;display:grid;grid-template-columns:320px 1fr;gap:20px;align-items:start}
+  @media(max-width:760px){main{grid-template-columns:1fr}}
+  section{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:18px}
+  h2{margin:0 0 12px;font-size:1.1rem}
+  label{display:block;font:600 .85rem system-ui,sans-serif;margin:10px 0 4px}
+  input,select,textarea{width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:4px;font:1rem system-ui,sans-serif;background:#fff}
+  input:focus,select:focus,textarea:focus,button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+  button{font:600 .9rem system-ui,sans-serif;padding:9px 14px;border:0;border-radius:4px;background:var(--accent);color:#fff;cursor:pointer}
+  button:disabled{opacity:.5;cursor:default}
+  button.ghost{background:transparent;color:var(--accent);border:1px solid var(--accent)}
+  button.del{background:transparent;color:var(--danger);border:1px solid var(--danger)}
+  .row{display:flex;gap:8px;margin-top:14px}
+  .tools{display:flex;gap:8px;margin-bottom:12px}
+  .tools input{flex:1}.tools select{width:auto}
+  ul{list-style:none;margin:0;padding:0}
+  li{display:flex;justify-content:space-between;gap:10px;padding:12px 0;border-top:1px solid var(--line)}
+  li:first-child{border-top:0}
+  .name{font-weight:700}
+  .meta{font:.85rem system-ui,sans-serif;color:var(--mute);word-break:break-word}
+  .tag{font:.75rem system-ui,sans-serif;background:#dcebe6;color:var(--accent);padding:1px 8px;border-radius:10px;margin-left:6px}
+  .actions{display:flex;gap:6px;align-items:flex-start}
+  .actions button{padding:5px 10px}
+  .empty{color:var(--mute);padding:24px 0;text-align:center}
+  .pager{display:flex;justify-content:space-between;align-items:center;margin-top:12px;font:.85rem system-ui,sans-serif;color:var(--mute)}
+  .pager button{padding:5px 12px}
+  #msg{font:.85rem system-ui,sans-serif;color:var(--danger);min-height:1.2em;margin-top:8px}
+</style>
+</head>
+<body>
+<header>
+  <h1>Contact Book</h1>
+  <p>Stored in a cloud database, so it works from any device.</p>
+</header>
+<main>
+  <section>
+    <h2 id="formTitle">Add contact</h2>
+    <form id="form" autocomplete="off">
+      <input type="hidden" id="id">
+      <label for="name">Name</label><input id="name" required maxlength="100">
+      <label for="email">Email</label><input id="email" type="email" maxlength="120">
+      <label for="phone">Phone</label><input id="phone" maxlength="40">
+      <label for="grp">Group</label>
+      <select id="grp"><option>Friends</option><option>Family</option><option>Work</option><option>Other</option></select>
+      <label for="notes">Notes</label><textarea id="notes" rows="3" maxlength="500"></textarea>
+      <div class="row">
+        <button type="submit" id="save">Save contact</button>
+        <button type="button" class="ghost" id="cancel" hidden>Cancel</button>
+      </div>
+      <div id="msg" role="alert"></div>
+    </form>
+  </section>
+  <section>
+    <h2>Contacts</h2>
+    <div class="tools">
+      <input id="search" placeholder="Search name, email or phone" aria-label="Search">
+      <select id="filter" aria-label="Filter by group"><option value="">All groups</option><option>Friends</option><option>Family</option><option>Work</option><option>Other</option></select>
+    </div>
+    <ul id="list"></ul>
+    <div class="pager">
+      <button class="ghost" id="prev">Previous</button>
+      <span id="info"></span>
+      <button class="ghost" id="next">Next</button>
+    </div>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const PAGE_SIZE = 10;
+let page = 1, total = 0, cache = new Map(), ctrl, timer;
+
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+async function api(url, opts = {}) {
+  const r = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...opts });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Request failed');
+  return r.status === 204 ? null : r.json();
+}
+
+// Fetch only the current page; cancel any request still in flight
+async function load() {
+  ctrl?.abort();
+  ctrl = new AbortController();
+  const params = new URLSearchParams({ q: $('search').value.trim(), grp: $('filter').value, page, limit: PAGE_SIZE });
+  try {
+    const d = await api('/api/contacts?' + params, { signal: ctrl.signal });
+    if (!d.rows.length && page > 1) { page--; return load(); }   // last row on page deleted
+    total = d.total;
+    cache = new Map(d.rows.map(c => [c.id, c]));
+    draw(d.rows);
+  } catch (e) {
+    if (e.name !== 'AbortError') $('msg').textContent = e.message;
+  }
+}
+
+function draw(rows) {
+  $('list').innerHTML = rows.length ? rows.map(c => `
+    <li>
+      <div>
+        <div><span class="name">${esc(c.name)}</span><span class="tag">${esc(c.grp)}</span></div>
+        <div class="meta">${[c.email, c.phone].filter(Boolean).map(esc).join(' &middot; ')}</div>
+        ${c.notes ? `<div class="meta">${esc(c.notes)}</div>` : ''}
+      </div>
+      <div class="actions">
+        <button class="ghost" data-edit="${c.id}">Edit</button>
+        <button class="del" data-del="${c.id}">Delete</button>
+      </div>
+    </li>`).join('')
+    : `<li class="empty">${$('search').value || $('filter').value ? 'No contacts match your search.' : 'No contacts yet. Add your first one on the left.'}</li>`;
+  const pages = Math.max(Math.ceil(total / PAGE_SIZE), 1);
+  $('info').textContent = `Page ${page} of ${pages} (${total} contacts)`;
+  $('prev').disabled = page <= 1;
+  $('next').disabled = page >= pages;
+}
+
+function resetForm() {
+  $('form').reset();
+  $('id').value = '';
+  $('msg').textContent = '';
+  $('formTitle').textContent = 'Add contact';
+  $('save').textContent = 'Save contact';
+  $('cancel').hidden = true;
+}
+
+$('form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const body = JSON.stringify({ name: $('name').value, email: $('email').value, phone: $('phone').value, grp: $('grp').value, notes: $('notes').value });
+  const id = $('id').value;
+  $('save').disabled = true;
+  try {
+    await api(id ? '/api/contacts/' + id : '/api/contacts', { method: id ? 'PUT' : 'POST', body });
+    resetForm();
+    load();
+  } catch (err) { $('msg').textContent = err.message; }
+  $('save').disabled = false;
+});
+
+// One listener for the whole list instead of one per button
+$('list').addEventListener('click', async e => {
+  const editId = e.target.dataset.edit, delId = e.target.dataset.del;
+  if (editId) {
+    const c = cache.get(Number(editId));          // no extra request needed
+    $('id').value = c.id; $('name').value = c.name; $('email').value = c.email;
+    $('phone').value = c.phone; $('grp').value = c.grp; $('notes').value = c.notes;
+    $('formTitle').textContent = 'Edit contact';
+    $('save').textContent = 'Update contact';
+    $('cancel').hidden = false;
+    $('name').focus();
+  }
+  if (delId && confirm('Delete this contact?')) {
+    try { await api('/api/contacts/' + delId, { method: 'DELETE' }); load(); }
+    catch (err) { $('msg').textContent = err.message; }
+  }
+});
+
+// Debounce: wait until typing pauses before querying the database
+$('search').addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(() => { page = 1; load(); }, 250); });
+$('filter').addEventListener('change', () => { page = 1; load(); });
+$('prev').addEventListener('click', () => { page--; load(); });
+$('next').addEventListener('click', () => { page++; load(); });
+$('cancel').addEventListener('click', resetForm);
+
+load();
+</script>
+</body>
+</html>

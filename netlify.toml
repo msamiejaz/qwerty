@@ -1,0 +1,16 @@
+[build]
+  publish = "public"
+  functions = "netlify/functions"
+
+[functions]
+  node_bundler = "esbuild"
+
+[[redirects]]
+  from = "/api/contacts/*"
+  to = "/.netlify/functions/contacts/:splat"
+  status = 200
+
+[[redirects]]
+  from = "/api/contacts"
+  to = "/.netlify/functions/contacts"
+  status = 200

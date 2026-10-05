@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Contact Book</title>
+<style>
+  :root{--bg:#eef2f0;--card:#fff;--ink:#1c2b27;--mute:#64756f;--accent:#1f6f5c;--line:#d5dfdb;--danger:#b3372f}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:Georgia,"Times New Roman",serif;background:var(--bg);color:var(--ink);line-height:1.5}
+  header{padding:32px 20px 8px;max-width:900px;margin:auto}
+  h1{margin:0;font-size:2.2rem;letter-spacing:-.5px}
+  header p{margin:4px 0 0;color:var(--mute)}
+  main{max-width:900px;margin:auto;padding:16px 20px 48px;display:grid;grid-template-columns:320px 1fr;gap:20px}
+  @media(max-width:760px){main{grid-template-columns:1fr}}
+  section{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:18px}
+  h2{margin:0 0 12px;font-size:1.1rem}
+  label{display:block;font:600 .85rem system-ui,sans-serif;margin:10px 0 4px}
+  input,select,textarea{width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:4px;font:1rem system-ui,sans-serif;background:#fff}
+  input:focus,select:focus,textarea:focus,button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+  button{font:600 .9rem system-ui,sans-serif;padding:9px 14px;border:0;border-radius:4px;background:var(--accent);color:#fff;cursor:pointer}
+  button.ghost{background:transparent;color:var(--accent);border:1px solid var(--accent)}
+  button.del{background:transparent;color:var(--danger);border:1px solid var(--danger)}
+  .row{display:flex;gap:8px;margin-top:14px}
+  .tools{display:flex;gap:8px;margin-bottom:12px}
+  .tools input{flex:1}.tools select{width:auto}
+  ul{list-style:none;margin:0;padding:0}
+  li{display:flex;justify-content:space-between;gap:10px;padding:12px 0;border-top:1px solid var(--line)}
+  li:first-child{border-top:0}
+  .name{font-weight:700}
+  .meta{font:.85rem system-ui,sans-serif;color:var(--mute);word-break:break-word}
+  .tag{font:.75rem system-ui,sans-serif;background:#dcebe6;color:var(--accent);padding:1px 8px;border-radius:10px;margin-left:6px}
+  .actions{display:flex;gap:6px;align-items:flex-start}
+  .actions button{padding:5px 10px}
+  .empty{color:var(--mute);padding:24px 0;text-align:center}
+  #status{font:.8rem system-ui,sans-serif;color:var(--mute);margin-top:10px}
+</style>
+</head>
+<body>
+<header>
+  <h1>Contact Book</h1>
+  <p>Saved in your browser's IndexedDB database. Works offline.</p>
+</header>
+<main>
+  <section>
+    <h2 id="formTitle">Add contact</h2>
+    <form id="form" autocomplete="off">
+      <input type="hidden" id="id">
+      <label for="name">Name</label><input id="name" required>
+      <label for="email">Email</label><input id="email" type="email">
+      <label for="phone">Phone</label><input id="phone">
+      <label for="group">Group</label>
+      <select id="group"><option>Friends</option><option>Family</option><option>Work</option><option>Other</option></select>
+      <label for="notes">Notes</label><textarea id="notes" rows="3"></textarea>
+      <div class="row">
+        <button type="submit" id="save">Save contact</button>
+        <button type="button" class="ghost" id="cancel" hidden>Cancel</button>
+      </div>
+    </form>
+  </section>
+  <section>
+    <h2>Contacts</h2>
+    <div class="tools">
+      <input id="search" placeholder="Search name, email or phone" aria-label="Search">
+      <select id="filter" aria-label="Filter by group"><option value="">All groups</option><option>Friends</option><option>Family</option><option>Work</option><option>Other</option></select>
+    </div>
+    <ul id="list"></ul>
+    <div id="status"></div>
+  </section>
+</main>
+
+<script>
+// ---------- Database layer (IndexedDB) ----------
+const DB_NAME = 'contactBookDB', STORE = 'contacts';
+let db;
+
+function openDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, 1);
+    req.onupgradeneeded = e => {
+      const store = e.target.result.createObjectStore(STORE, { keyPath: 'id', autoIncrement: true });
+      store.createIndex('name', 'name', { unique: false });
+      store.createIndex('group', 'group', { unique: false });
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function tx(mode, fn) {
+  return new Promise((resolve, reject) => {
+    const t = db.transaction(STORE, mode);
+    const req = fn(t.objectStore(STORE));
+    t.oncomplete = () => resolve(req.result);
+    t.onerror = () => reject(t.error);
+  });
+}
+
+const addContact = c => tx('readwrite', s => s.add(c));
+const updateContact = c => tx('readwrite', s => s.put(c));
+const deleteContact = id => tx('readwrite', s => s.delete(id));
+const getContact = id => tx('readonly', s => s.get(id));
+const getAll = () => tx('readonly', s => s.getAll());
+
+// ---------- UI ----------
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+async function render() {
+  const q = $('search').value.trim().toLowerCase();
+  const g = $('filter').value;
+  let rows = await getAll();
+  const total = rows.length;
+  rows = rows
+    .filter(c => !g || c.group === g)
+    .filter(c => !q || [c.name, c.email, c.phone].some(v => (v || '').toLowerCase().includes(q)))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  $('list').innerHTML = rows.length ? rows.map(c => `
+    <li>
+      <div>
+        <div><span class="name">${esc(c.name)}</span><span class="tag">${esc(c.group)}</span></div>
+        <div class="meta">${[c.email, c.phone].filter(Boolean).map(esc).join(' &middot; ')}</div>
+        ${c.notes ? `<div class="meta">${esc(c.notes)}</div>` : ''}
+      </div>
+      <div class="actions">
+        <button class="ghost" data-edit="${c.id}">Edit</button>
+        <button class="del" data-del="${c.id}">Delete</button>
+      </div>
+    </li>`).join('')
+    : `<li class="empty">${total ? 'No contacts match your search.' : 'No contacts yet. Add your first one on the left.'}</li>`;
+  $('status').textContent = `${rows.length} of ${total} contacts shown`;
+}
+
+function resetForm() {
+  $('form').reset();
+  $('id').value = '';
+  $('formTitle').textContent = 'Add contact';
+  $('save').textContent = 'Save contact';
+  $('cancel').hidden = true;
+}
+
+$('form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const contact = {
+    name: $('name').value.trim(),
+    email: $('email').value.trim(),
+    phone: $('phone').value.trim(),
+    group: $('group').value,
+    notes: $('notes').value.trim(),
+    updated: Date.now()
+  };
+  if (!contact.name) return;
+  try {
+    if ($('id').value) { contact.id = Number($('id').value); await updateContact(contact); }
+    else await addContact(contact);
+    resetForm();
+    render();
+  } catch (err) { $('status').textContent = 'Could not save: ' + err.message; }
+});
+
+$('list').addEventListener('click', async e => {
+  const editId = e.target.dataset.edit, delId = e.target.dataset.del;
+  if (editId) {
+    const c = await getContact(Number(editId));
+    $('id').value = c.id; $('name').value = c.name; $('email').value = c.email;
+    $('phone').value = c.phone; $('group').value = c.group; $('notes').value = c.notes;
+    $('formTitle').textContent = 'Edit contact';
+    $('save').textContent = 'Update contact';
+    $('cancel').hidden = false;
+    $('name').focus();
+  }
+  if (delId && confirm('Delete this contact?')) { await deleteContact(Number(delId)); render(); }
+});
+
+$('cancel').addEventListener('click', resetForm);
+$('search').addEventListener('input', render);
+$('filter').addEventListener('change', render);
+
+openDB().then(d => { db = d; render(); })
+  .catch(err => { $('status').textContent = 'Database unavailable: ' + err.message; });
+</script>
+</body>
+</html>
